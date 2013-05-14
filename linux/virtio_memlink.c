@@ -71,15 +71,20 @@ static void virtmemlink_changed(struct virtio_device *vdev)
 {
 }
 
-static int get_unused(struct virtio_memlink *vml)
-{
+void memlink_free(struct memlink *ml){
+	/* release page cache */
 	int i;
-	for(i=0; i<MEMLINK_MAX_LINKS; i++){
-		if(vml->memlinks[i].status == MEMLINK_STATUS_UNUSED){
-			return i;
-		}
+	for(i=0; i<ml->num_pfns; i++){
+		set_page_dirty_lock(ml->pages[i]);
+		page_cache_release(ml->pages[i]);
 	}
-	return -ENOSPC;
+
+	/* free memory */
+	kfree(ml->pages);
+	kfree(ml->pfns);
+
+	/* reset status to unused */
+	ml->status = MEMLINK_STATUS_UNUSED;
 }
 
 static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input *input)
@@ -87,59 +92,61 @@ static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input 
 	struct scatterlist sg[3];
 	struct virtqueue *vq = vml->create_vq;
 	int err, i;
-  struct memlink *ml;
+	struct memlink new_ml, *ml;
 
-	input->id = get_unused(vml);
-	if (input->id < 0) {
-    printk(KERN_ERR "virtmemlink: cannot get unused memlink\n");
-		return input->id;
-	}
-
-  ml = &vml->memlinks[input->id];
+	struct page **pages;
+	unsigned int num_pfns;
+	uint32_t *pfns;
 
 	if (!access_ok(VERIFY_WRITE, input->gva, input->num_pfns)) {
-    #if DEBUG
-    	printk(KERN_INFO "virtmemlink: not a valid address\n");
-    #endif
+		printk(KERN_ERR "virtmemlink: not a valid address\n");
 		return -EFAULT;
 	}
 
-	ml->num_pfns = input->num_pfns;
-	ml->pfns = kmalloc(sizeof(uint32_t)*(ml->num_pfns), GFP_KERNEL);
+	new_ml.num_pfns = input->num_pfns;
+	new_ml.pfns = kmalloc(sizeof(uint32_t)*(new_ml.num_pfns), GFP_KERNEL);
 
-	if ((ml->pages = kmalloc(ml->num_pfns * sizeof(*ml->pages), GFP_KERNEL)) == NULL)
+	if ((new_ml.pages = kmalloc(new_ml.num_pfns * sizeof(*new_ml.pages), GFP_KERNEL)) == NULL)
 		return -ENOMEM;
 
 	down_write(&current->mm->mmap_sem);
-	err = get_user_pages_fast(input->gva, input->num_pfns, 1, ml->pages);
+	err = get_user_pages_fast(input->gva, new_ml.num_pfns, 1, new_ml.pages);
 	up_write(&current->mm->mmap_sem);
 
 	if (err <= 0){
 		return -EFAULT;
 	}
 
-	for (i=0; i<ml->num_pfns; i++) {
-	  ml->pfns[i] = page_to_pfn(ml->pages[i]);
+	for (i=0; i<new_ml.num_pfns; i++) {
+		pfns[i] = page_to_pfn(pages[i]);
 	}
 
-	sg_init_one(&sg[0], &input->id, sizeof(input->id));
-	sg_init_one(&sg[1], &ml->num_pfns, sizeof(ml->num_pfns));
-	sg_init_one(&sg[2], ml->pfns, sizeof(ml->pfns[0]) * ml->num_pfns);
+	sg_init_one(&sg[0], &new_ml.num_pfns, sizeof(ml->num_pfns));
+	sg_init_one(&sg[1], new_ml.pfns, sizeof(ml->pfns[0]) * ml->num_pfns);
+	sg_init_one(&sg[2], &input->id, sizeof(input->id));
 
 	init_completion(&vml->create_acked);
 
-	if (vq->vq_ops->add_buf(vq, sg, 3, 0, vml) < 0)
+	if (vq->vq_ops->add_buf(vq, sg, 2, 1, vml) < 0)
 		BUG();
 
 	vq->vq_ops->kick(vq);
 
 	wait_for_completion(&vml->create_acked);
 
+	if (input->id < 0){
+		memlink_free(&new_ml);
+		return -ENOSPC;
+	}
+
+	ml = &vml->memlinks[input->id];
+	ml->num_pfns = new_ml.num_pfns;
+	ml->pfns = new_ml.pfns;
+	ml->pages = new_ml.pages;
 	ml->status = MEMLINK_STATUS_USED;
 
 	return 0;
 }
-
 
 static int revoke(struct virtio_memlink *vml, int id)
 {
@@ -149,13 +156,13 @@ static int revoke(struct virtio_memlink *vml, int id)
 	int i;
 
 	if (id >= MEMLINK_MAX_LINKS || id < 0) {
-	  printk(KERN_ERR "virtmemlink: memlink invalid id\n");
+		printk(KERN_ERR "virtmemlink: memlink invalid id\n");
 		return -EINVAL;
 	}
 
 	ml = &vml->memlinks[id];
 	if (ml->status != MEMLINK_STATUS_USED) {
-	  printk(KERN_ERR "virtmemlink: revoking unused memlink\n");
+		printk(KERN_ERR "virtmemlink: revoking unused memlink\n");
 		return -EINVAL;
 	}
 
@@ -169,18 +176,7 @@ static int revoke(struct virtio_memlink *vml, int id)
 	vq->vq_ops->kick(vq);
 	wait_for_completion(&vml->revoke_acked);
 
-	/* release page cache */
-	for(i=0; i<ml->num_pfns; i++){
-		set_page_dirty_lock(ml->pages[i]);
-		page_cache_release(ml->pages[i]);
-	}
-
-	/* free memory */
-	kfree(ml->pages);
-  kfree(ml->pfns);
-
-	/* reset status to unused */
-	ml->status = MEMLINK_STATUS_UNUSED;
+	memlink_free(ml);
 
 	return 0;
 }
@@ -200,22 +196,15 @@ static int init_vq(struct virtio_memlink *vml)
 	const char *names[] = { "memlink" };
 	int err;
 
-  #if DEBUG
-  	printk(KERN_INFO "virtmemlink: find_vqs");
-  #endif
-
 	err = vml->vdev->config->find_vqs(vml->vdev, 2, vqs, callbacks, names);
 	if (err) {
-    printk(KERN_ERR "virtmemlink: virtqueue init failed\n");
+		printk(KERN_ERR "virtmemlink: virtqueue init failed\n");
 		return err;
 	}
 
 	vml->create_vq = vqs[0];
 	vml->revoke_vq = vqs[1];
 
-  #if DEBUG
-  	printk(KERN_INFO "virtmemlink: virtqueue init success\n");
-  #endif
 	return 0;
 }
 
@@ -248,18 +237,12 @@ static int virtmemlink_probe(struct virtio_device *vdev)
 		ml->pfns = NULL;
 	}
 
-  #if DEBUG
-  	printk(KERN_INFO "virtmemlink: probe success\n");
-  #endif
-
 	return 0;
 
 out_free_vml:
 	kfree(vml);
 out:
-  #if DEBUG
-  	printk(KERN_INFO "virtmemlink: probe failed\n");
-  #endif
+	printk(KERN_ERR "virtmemlink: probe failed\n");
 	return err;
 }
 
@@ -272,9 +255,9 @@ static void virtmemlink_remove(struct virtio_device *vdev)
 	vml->vdev->config->reset(vml->vdev);
 	vml->vdev->config->del_vqs(vml->vdev);
 	kfree(vml);
-  #if DEBUG
-  	printk(KERN_INFO "virtmemlink: removed\n");
-  #endif
+#if DEBUG
+	printk(KERN_INFO "virtmemlink: removed\n");
+#endif
 }
 
 static unsigned int features[] = {};
@@ -292,17 +275,17 @@ static struct virtio_driver virtio_memlink_driver = {
 
 static int dev_open(struct inode *inode, struct file *filp)
 {
-  #if DEBUG
-	  printk(KERN_INFO "dev_open\n");
-  #endif
+#if DEBUG
+	printk(KERN_INFO "dev_open\n");
+#endif
 	return 0;
 }
 
 static int dev_release(struct inode *inode, struct file *filp)
 {
-  #if DEBUG
-	  printk(KERN_INFO "dev_release\n");
-  #endif
+#if DEBUG
+	printk(KERN_INFO "dev_release\n");
+#endif
 	return 0;
 }
 
@@ -322,15 +305,15 @@ static int dev_ioctl(struct inode *inode, struct file *filp,
 		case MEMLINK_IOC_CREATE:
 			ret = copy_from_user(&input, (void *)args, sizeof(struct virtio_memlink_ioctl_input));
 			if (ret != 0){
-			  printk(KERN_ERR "%s: copy_from_user failed. size seems not match.\n", __FUNCTION__);
+				printk(KERN_ERR "%s: copy_from_user failed. size seems not match.\n", __FUNCTION__);
 				return -EFAULT;
 			}
 
 			create(vml_global, &input);
 			if (ret < 0){
-			  printk(KERN_ERR "%s: memlink failed to create.\n", __FUNCTION__);
+				printk(KERN_ERR "%s: memlink failed to create.\n", __FUNCTION__);
 			} else {
-			  printk(KERN_ERR "%s: %d memlink with %d pages created.\n", __FUNCTION__, input.id, input.num_pfns);
+				printk(KERN_ERR "%s: %d memlink with %d pages created.\n", __FUNCTION__, input.id, input.num_pfns);
 			}
 
 			ret = copy_to_user((void *)args, &input, sizeof(struct virtio_memlink_ioctl_input));
@@ -397,15 +380,15 @@ static int init_ioctl(void)
 
 static void fini_ioctl(void)
 {
-    dev_t dev;
+	dev_t dev;
 
-    dev = MKDEV(dev_major, dev_minor);
-    if (dev_cdevp) {
-        cdev_del(dev_cdevp);
-        kfree(dev_cdevp);
-    }
-    unregister_chrdev_region(dev, 1);
-    printk("virtmemlink: fini_ioctl\n");
+	dev = MKDEV(dev_major, dev_minor);
+	if (dev_cdevp) {
+		cdev_del(dev_cdevp);
+		kfree(dev_cdevp);
+	}
+	unregister_chrdev_region(dev, 1);
+	printk("virtmemlink: fini_ioctl\n");
 }
 
 static int __init init(void)
