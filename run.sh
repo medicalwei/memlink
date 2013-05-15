@@ -5,4 +5,6 @@ IMG_PATH=~/Documents/qemu-img/test-linux.img
 $QEMU_PATH \
   -enable-kvm \
   -device virtio-memlink-pci \
+  -m 4096 \
+  -smp 4 \
   $IMG_PATH
