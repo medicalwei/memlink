@@ -8,3 +8,6 @@ all:
 	make -C $(KDIR) M=$(PWD) modules
 clean:
 	make -C $(KDIR) M=$(PWD) clean
+run: all
+	insmod virtio_memlink.ko
+	mknod /dev/memlink c 248 0
