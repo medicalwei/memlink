@@ -318,7 +318,7 @@ static int dev_ioctl(struct inode *inode, struct file *filp,
 			if (ret < 0){
 				printk(KERN_ERR "%s: memlink failed to create.\n", __FUNCTION__);
 			} else {
-				printk(KERN_ERR "%s: %d memlink with %d pages created.\n", __FUNCTION__, input.id, input.num_pfns);
+				printk(KERN_ERR "%s: %d memlink with %d bytes created.\n", __FUNCTION__, input.id, input.size);
 			}
 
 			ret = copy_to_user((void *)args, &input, sizeof(struct virtio_memlink_ioctl_input));
