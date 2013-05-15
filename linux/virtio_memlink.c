@@ -94,19 +94,15 @@ static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input 
 	int err, i;
 	struct memlink new_ml, *ml;
 
-	struct page **pages;
-	unsigned int num_pfns;
-	uint32_t *pfns;
-
 	if (!access_ok(VERIFY_WRITE, input->gva, input->num_pfns)) {
 		printk(KERN_ERR "virtmemlink: not a valid address\n");
 		return -EFAULT;
 	}
 
 	new_ml.num_pfns = input->num_pfns;
-	new_ml.pfns = kmalloc(sizeof(uint32_t)*(new_ml.num_pfns), GFP_KERNEL);
+	new_ml.pfns = kmalloc(sizeof(uint32_t)* new_ml.num_pfns, GFP_KERNEL);
 
-	if ((new_ml.pages = kmalloc(new_ml.num_pfns * sizeof(*new_ml.pages), GFP_KERNEL)) == NULL)
+	if ((new_ml.pages = kmalloc(sizeof(*new_ml.pages) * new_ml.num_pfns, GFP_KERNEL)) == NULL)
 		return -ENOMEM;
 
 	down_write(&current->mm->mmap_sem);
@@ -118,11 +114,11 @@ static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input 
 	}
 
 	for (i=0; i<new_ml.num_pfns; i++) {
-		pfns[i] = page_to_pfn(pages[i]);
+		new_ml.pfns[i] = page_to_pfn(new_ml.pages[i]);
 	}
 
-	sg_init_one(&sg[0], &new_ml.num_pfns, sizeof(ml->num_pfns));
-	sg_init_one(&sg[1], new_ml.pfns, sizeof(ml->pfns[0]) * ml->num_pfns);
+	sg_init_one(&sg[0], &new_ml.num_pfns, sizeof(new_ml.num_pfns));
+	sg_init_one(&sg[1], new_ml.pfns, sizeof(new_ml.pfns[0]) * new_ml.num_pfns);
 	sg_init_one(&sg[2], &input->id, sizeof(input->id));
 
 	init_completion(&vml->create_acked);
@@ -153,7 +149,6 @@ static int revoke(struct virtio_memlink *vml, int id)
 	struct virtqueue *vq = vml->revoke_vq;
 	struct scatterlist sg;
 	struct memlink *ml;
-	int i;
 
 	if (id >= MEMLINK_MAX_LINKS || id < 0) {
 		printk(KERN_ERR "virtmemlink: memlink invalid id\n");
