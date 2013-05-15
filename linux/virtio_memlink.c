@@ -50,7 +50,7 @@ static void memlink_create_ack(struct virtqueue *vq)
 	struct virtio_memlink *vml;
 	unsigned int len;
 
-	vml = vq->vq_ops->get_buf(vq, &len);
+	vml = virtqueue_get_buf(vq, &len);
 	if (vml) {
 
 		complete(&vml->create_acked);
@@ -62,7 +62,7 @@ static void memlink_revoke_ack(struct virtqueue *vq)
 	struct virtio_memlink *vml;
 	unsigned int len;
 
-	vml = vq->vq_ops->get_buf(vq, &len);
+	vml = virtqueue_get_buf(vq, &len);
 	if (vml)
 		complete(&vml->revoke_acked);
 }
@@ -127,10 +127,10 @@ static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input 
 
 	init_completion(&vml->create_acked);
 
-	if (vq->vq_ops->add_buf(vq, sg, 2, 1, vml) < 0)
+	if (virtqueue_add_buf(vq, sg, 2, 1, vml) < 0)
 		BUG();
 
-	vq->vq_ops->kick(vq);
+	virtqueue_kick(vq);
 
 	wait_for_completion(&vml->create_acked);
 
@@ -170,10 +170,10 @@ static int revoke(struct virtio_memlink *vml, int id)
 	sg_init_one(&sg, &id, sizeof(id));
 	init_completion(&vml->revoke_acked);
 
-	if (vq->vq_ops->add_buf(vq, &sg, 1, 0, vml) < 0)
+	if (virtqueue_add_buf(vq, &sg, 1, 0, vml) < 0)
 		BUG();
 
-	vq->vq_ops->kick(vq);
+	virtqueue_kick(vq);
 	wait_for_completion(&vml->revoke_acked);
 
 	memlink_free(ml);
