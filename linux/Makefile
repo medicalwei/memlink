@@ -9,7 +9,7 @@ all:
 clean:
 	make -C $(KDIR) M=$(PWD) clean
 run: all
-	rm -f /dev/memlink
-	rmmod virtio_memlink
+	-rm /dev/memlink
+	-rmmod virtio_memlink
 	insmod virtio_memlink.ko
 	mknod /dev/memlink c 248 0
