@@ -19,6 +19,8 @@ struct memlink
 {
 	int status;
 	struct page **pages;
+	unsigned int size;
+	int offset;
 	unsigned int num_pfns;
 	uint32_t *pfns;
 };
@@ -94,13 +96,20 @@ static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input 
 	int err, i;
 	struct memlink new_ml, *ml;
 
-	if (!access_ok(VERIFY_WRITE, input->gva, input->num_pfns)) {
+	new_ml.size = input->size;
+
+	new_ml.num_pfns = (new_ml.size + new_ml.offset)/PAGE_SIZE;
+	if((new_ml.size + new_ml.offset)%PAGE_SIZE > 0){
+		new_ml.num_pfns += 1;
+	}
+
+	if (!access_ok(VERIFY_WRITE, input->gva, new_ml.num_pfns)) {
 		printk(KERN_ERR "virtmemlink: not a valid address\n");
 		return -EFAULT;
 	}
 
-	new_ml.num_pfns = input->num_pfns;
 	new_ml.pfns = kmalloc(sizeof(uint32_t)* new_ml.num_pfns, GFP_KERNEL);
+
 
 	if ((new_ml.pages = kmalloc(sizeof(*new_ml.pages) * new_ml.num_pfns, GFP_KERNEL)) == NULL)
 		return -ENOMEM;
@@ -117,13 +126,14 @@ static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input 
 		new_ml.pfns[i] = page_to_pfn(new_ml.pages[i]);
 	}
 
-	sg_init_one(&sg[0], &new_ml.num_pfns, sizeof(new_ml.num_pfns));
-	sg_init_one(&sg[1], new_ml.pfns, sizeof(new_ml.pfns[0]) * new_ml.num_pfns);
-	sg_init_one(&sg[2], &input->id, sizeof(input->id));
+	sg_init_one(&sg[0], &new_ml.size, sizeof(new_ml.size));
+	sg_init_one(&sg[1], &new_ml.offset, sizeof(new_ml.offset));
+	sg_init_one(&sg[2], new_ml.pfns, sizeof(new_ml.pfns[0]) * new_ml.num_pfns);
+	sg_init_one(&sg[3], &input->id, sizeof(input->id));
 
 	init_completion(&vml->create_acked);
 
-	if (virtqueue_add_buf(vq, sg, 2, 1, vml) < 0)
+	if (virtqueue_add_buf(vq, sg, 3, 1, vml) < 0)
 		BUG();
 
 	virtqueue_kick(vq);
@@ -157,7 +167,7 @@ static int revoke(struct virtio_memlink *vml, int id)
 
 	ml = &vml->memlinks[id];
 	if (ml->status != MEMLINK_STATUS_USED) {
-		printk(KERN_ERR "virtmemlink: revoking unused memlink\n");
+		/* printk(KERN_ERR "virtmemlink: revoking unused memlink\n"); */
 		return -EINVAL;
 	}
 

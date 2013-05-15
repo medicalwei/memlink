@@ -12,7 +12,7 @@
 struct virtio_memlink_ioctl_input
 {
 	int id; /* will be given by module */
-	int num_pfns;
+	int size;
 	long unsigned int gva;
 };
 

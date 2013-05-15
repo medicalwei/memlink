@@ -7,7 +7,7 @@
 #include <fcntl.h>
 #include <errno.h>
 
-#include "virtio_memlink.h"
+#include "../linux/virtio_memlink.h"
 
 // #define PAGES 1024*256 /* 1G */
 #define PAGES 4
@@ -19,7 +19,7 @@ int main(int argc, char *argv[])
 	int *a = (int *) valloc(PAGESIZE*PAGES);
 	int i;
 	struct virtio_memlink_ioctl_input memlink_input;
-	mlock(a, sizeof(int)*PAGESIZE*PAGES);
+	mlock(a, PAGESIZE*PAGES);
 
 	if (argc < 2) {
 		printf("Usage: prog \n");
@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
 	printf("\n");
 
 	memlink_input.gva = (long unsigned int) a;
-	memlink_input.num_pfns = PAGES;
+	memlink_input.size = PAGESIZE*PAGES;
 
 
 	if (ioctl(fd, MEMLINK_IOC_CREATE, &memlink_input) < 0) {
