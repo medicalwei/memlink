@@ -32,8 +32,10 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	for(i=0; i<PAGESIZE/4; i++){
+		a[i] = i;
+	}
 	for(i=0; i<PAGES; i++){
-		a[i*PAGESIZE/4] = i;
 		printf("%d ", a[i*PAGESIZE/sizeof(int)]);
 	}
 
