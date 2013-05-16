@@ -115,7 +115,7 @@ static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input 
 		return -ENOMEM;
 
 	down_write(&current->mm->mmap_sem);
-	err = get_user_pages_fast(input->gva, new_ml.num_pfns, 1, new_ml.pages);
+	err = get_user_pages_fast(input->gva & ~(PAGE_SIZE-1) , new_ml.num_pfns, 1, new_ml.pages);
 	up_write(&current->mm->mmap_sem);
 
 	if (err <= 0){
