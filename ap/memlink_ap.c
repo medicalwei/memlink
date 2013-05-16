@@ -42,7 +42,6 @@ int main(int argc, char *argv[])
 	memlink_input.gva = (long unsigned int) a;
 	memlink_input.size = PAGESIZE*PAGES;
 
-
 	if (ioctl(fd, MEMLINK_IOC_CREATE, &memlink_input) < 0) {
 		printf("send ptr failed\n");
 		return -1;

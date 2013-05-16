@@ -20,7 +20,7 @@ struct memlink
 	int status;
 	struct page **pages;
 	unsigned int size;
-	int offset;
+	unsigned int offset;
 	unsigned int num_pfns;
 	uint32_t *pfns;
 };
@@ -91,7 +91,7 @@ void memlink_free(struct memlink *ml){
 
 static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input *input)
 {
-	struct scatterlist sg[3];
+	struct scatterlist sg[4];
 	struct virtqueue *vq = vml->create_vq;
 	int err, i;
 	struct memlink new_ml, *ml;
