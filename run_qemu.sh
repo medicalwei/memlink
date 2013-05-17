@@ -7,4 +7,5 @@ $QEMU_PATH \
   -device virtio-memlink-pci \
   -m 4096 \
   -smp 4 \
+  -nographic \
   $IMG_PATH
