@@ -49,7 +49,7 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-	printf("created, id: %d\n", memlink_input.id);
+	printf("created, hva: %llx\n", memlink_input.hva);
 
 	getchar();
 
@@ -60,7 +60,7 @@ int main(int argc, char *argv[])
 
 	getchar();
 
-	if (ioctl(fd, MEMLINK_IOC_REVOKE, memlink_input.id) < 0) {
+	if (ioctl(fd, MEMLINK_IOC_REVOKE, memlink_input.hva) < 0) {
 		printf("send ptr failed\n");
 		return -1;
 	}

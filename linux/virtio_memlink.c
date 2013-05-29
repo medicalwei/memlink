@@ -15,14 +15,18 @@ static int dev_major;
 static int dev_minor;
 struct cdev *dev_cdevp = NULL;
 
+struct memlink;
+struct virtio_memlink;
+
 struct memlink
 {
-	int status;
 	struct page **pages;
 	unsigned int size;
 	unsigned int offset;
 	unsigned int num_pfns;
 	uint32_t *pfns;
+	uint64_t hva;
+	struct memlink *next, *pprev;
 };
 
 struct virtio_memlink
@@ -31,7 +35,7 @@ struct virtio_memlink
 	struct virtqueue *create_vq;
 	struct virtqueue *revoke_vq;
 
-	struct memlink memlinks[MEMLINK_MAX_LINKS];
+	struct memlink *memlinks_head;
 
 	struct completion create_acked;
 	struct completion revoke_acked;
@@ -84,9 +88,6 @@ void memlink_free(struct memlink *ml){
 	/* free memory */
 	kfree(ml->pages);
 	kfree(ml->pfns);
-
-	/* reset status to unused */
-	ml->status = MEMLINK_STATUS_UNUSED;
 }
 
 static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input *input)
@@ -94,85 +95,102 @@ static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input 
 	struct scatterlist sg[4];
 	struct virtqueue *vq = vml->create_vq;
 	int err, i;
-	struct memlink new_ml, *ml;
+	struct memlink *ml = kmalloc(sizeof(struct memlink), GFP_KERNEL);
 
-	new_ml.size = input->size;
+	ml->size = input->size;
+	ml->offset = input->gva && (PAGE_SIZE-1);
+	ml->num_pfns = (ml->size + ml->offset)/PAGE_SIZE;
 
-	new_ml.num_pfns = (new_ml.size + new_ml.offset)/PAGE_SIZE;
-	if((new_ml.size + new_ml.offset)%PAGE_SIZE > 0){
-		new_ml.num_pfns += 1;
+	if ((ml->size + ml->offset)%PAGE_SIZE > 0) {
+		ml->num_pfns += 1;
 	}
 
-	if (!access_ok(VERIFY_WRITE, input->gva, new_ml.num_pfns)) {
+	if (!access_ok(VERIFY_WRITE, input->gva, ml->num_pfns)) {
 		printk(KERN_ERR "virtmemlink: not a valid address\n");
+		kfree(ml);
 		return -EFAULT;
 	}
 
-	new_ml.pfns = kmalloc(sizeof(uint32_t)* new_ml.num_pfns, GFP_KERNEL);
+	ml->pfns = kmalloc(sizeof(uint32_t)* ml->num_pfns, GFP_KERNEL);
 
-
-	if ((new_ml.pages = kmalloc(sizeof(*new_ml.pages) * new_ml.num_pfns, GFP_KERNEL)) == NULL)
+	if (ml->pfns == NULL) {
+		kfree(ml);
 		return -ENOMEM;
+	}
+
+	ml->pages = kmalloc(sizeof(*ml->pages) * ml->num_pfns, GFP_KERNEL);
+
+	if (ml->pages == NULL) {
+		kfree(ml->pages);
+		kfree(ml);
+		return -ENOMEM;
+	}
 
 	down_write(&current->mm->mmap_sem);
-	err = get_user_pages_fast(input->gva & ~(PAGE_SIZE-1) , new_ml.num_pfns, 1, new_ml.pages);
+	err = get_user_pages_fast(input->gva & ~(PAGE_SIZE-1) ,
+			ml->num_pfns, 1, ml->pages);
 	up_write(&current->mm->mmap_sem);
 
-	if (err <= 0){
+	if (err <= 0) {
+		kfree(ml->pages);
+		kfree(ml->pfns);
+		kfree(ml);
 		return -EFAULT;
 	}
 
-	for (i=0; i<new_ml.num_pfns; i++) {
-		new_ml.pfns[i] = page_to_pfn(new_ml.pages[i]);
+	for (i=0; i<ml->num_pfns; i++) {
+		ml->pfns[i] = page_to_pfn(ml->pages[i]);
 	}
 
-	sg_init_one(&sg[0], &new_ml.size, sizeof(new_ml.size));
-	sg_init_one(&sg[1], &new_ml.offset, sizeof(new_ml.offset));
-	sg_init_one(&sg[2], new_ml.pfns, sizeof(new_ml.pfns[0]) * new_ml.num_pfns);
-	sg_init_one(&sg[3], &input->id, sizeof(input->id));
+	sg_init_one(&sg[0], &ml->size, sizeof(ml->size));
+	sg_init_one(&sg[1], &ml->offset, sizeof(ml->offset));
+	sg_init_one(&sg[2], ml->pfns,
+			sizeof(ml->pfns[0]) * ml->num_pfns);
+	sg_init_one(&sg[3], &ml->hva, sizeof(input->hva));
 
 	init_completion(&vml->create_acked);
 
-	if (virtqueue_add_buf(vq, sg, 3, 1, vml) < 0)
-		BUG();
+	BUG_ON(virtqueue_add_buf(vq, sg, 3, 1, vml) < 0);
 
 	virtqueue_kick(vq);
 
 	wait_for_completion(&vml->create_acked);
 
-	if (input->id < 0){
-		memlink_free(&new_ml);
+	if (input->hva == 0) {
+		memlink_free(ml);
 		return -ENOSPC;
 	}
 
-	ml = &vml->memlinks[input->id];
-	ml->num_pfns = new_ml.num_pfns;
-	ml->pfns = new_ml.pfns;
-	ml->pages = new_ml.pages;
-	ml->status = MEMLINK_STATUS_USED;
+	input->hva = ml->hva;
+
+	ml->next = vml->memlinks_head;
+	ml->pprev = NULL;
+	if (ml->next != NULL) {
+		ml->next->pprev = ml->next;
+	}
+
+	vml->memlinks_head = ml;
 
 	return 0;
 }
 
-static int revoke(struct virtio_memlink *vml, int id)
+static int revoke(struct virtio_memlink *vml, uint64_t hva)
 {
 	struct virtqueue *vq = vml->revoke_vq;
 	struct scatterlist sg;
 	struct memlink *ml;
 
-	if (id >= MEMLINK_MAX_LINKS || id < 0) {
-		printk(KERN_ERR "virtmemlink: memlink invalid id\n");
-		return -EINVAL;
+	for (ml = vml->memlinks_head; ml != NULL; ml = ml->next){
+		if (ml->hva == hva){
+			break;
+		}
 	}
-
-	ml = &vml->memlinks[id];
-	if (ml->status != MEMLINK_STATUS_USED) {
-		/* printk(KERN_ERR "virtmemlink: revoking unused memlink\n"); */
+	if (ml == NULL) {
 		return -EINVAL;
 	}
 
 	/* revoke remote link */
-	sg_init_one(&sg, &id, sizeof(id));
+	sg_init_one(&sg, &ml->hva, sizeof(ml->hva));
 	init_completion(&vml->revoke_acked);
 
 	if (virtqueue_add_buf(vq, &sg, 1, 0, vml) < 0)
@@ -181,7 +199,18 @@ static int revoke(struct virtio_memlink *vml, int id)
 	virtqueue_kick(vq);
 	wait_for_completion(&vml->revoke_acked);
 
+
 	memlink_free(ml);
+	if (ml->pprev != NULL){
+		ml->pprev->next = ml->next;
+	} else {
+		vml->memlinks_head = ml->next;
+	}
+	if (ml->next != NULL){
+		ml->next->pprev = ml->pprev;
+	}
+
+	kfree(ml);
 
 	return 0;
 }
@@ -217,7 +246,6 @@ static int virtmemlink_probe(struct virtio_device *vdev)
 {
 	struct virtio_memlink *vml;
 	int err;
-	int i;
 
 	vdev->priv = vml = kmalloc(sizeof(*vml), GFP_KERNEL);
 	if (!vml) {
@@ -234,13 +262,7 @@ static int virtmemlink_probe(struct virtio_device *vdev)
 
 	vml_global = vml;
 
-	for(i=0; i<MEMLINK_MAX_LINKS; i++){
-		struct memlink *ml = &vml->memlinks[i];
-		ml->status = MEMLINK_STATUS_UNUSED;
-		ml->pages = NULL;
-		ml->num_pfns = 0;
-		ml->pfns = NULL;
-	}
+	vml->memlinks_head = NULL;
 
 	return 0;
 
@@ -318,7 +340,7 @@ static int dev_ioctl(struct inode *inode, struct file *filp,
 			if (ret < 0){
 				printk(KERN_ERR "%s: memlink failed to create.\n", __FUNCTION__);
 			} else {
-				printk(KERN_ERR "%s: %d memlink with %d bytes created.\n", __FUNCTION__, input.id, input.size);
+				printk(KERN_ERR "%s: memlink hva: %llx, size: %d\n", __FUNCTION__, input.hva, input.size);
 			}
 
 			ret = copy_to_user((void *)args, &input, sizeof(struct virtio_memlink_ioctl_input));

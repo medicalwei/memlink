@@ -11,9 +11,9 @@
 
 struct virtio_memlink_ioctl_input
 {
-	int id; /* will be given by module */
 	int size;
 	long unsigned int gva;
+	unsigned long long hva; /* will be given by module */
 };
 
 #define MEMLINK_IOC_MAGIC 0xAF
