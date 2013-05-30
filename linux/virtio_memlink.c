@@ -98,7 +98,7 @@ static int create(struct virtio_memlink *vml, struct virtio_memlink_ioctl_input 
 	struct memlink *ml = kmalloc(sizeof(struct memlink), GFP_KERNEL);
 
 	ml->size = input->size;
-	ml->offset = input->gva && (PAGE_SIZE-1);
+	ml->offset = input->gva & (PAGE_SIZE-1);
 	ml->num_pfns = (ml->size + ml->offset)/PAGE_SIZE;
 
 	if ((ml->size + ml->offset)%PAGE_SIZE > 0) {
